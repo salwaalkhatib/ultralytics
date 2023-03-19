@@ -2,6 +2,7 @@
 data
 cluster_out
 slurm_script
+experiments
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
