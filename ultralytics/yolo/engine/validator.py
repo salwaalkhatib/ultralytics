@@ -159,12 +159,12 @@ class BaseValidator:
 
             # inference
             with dt[1]:
-                preds = model(batch['img'])
+                preds, features = model(batch['img'])
 
             # loss
             with dt[2]:
                 if self.training:
-                    self.loss += trainer.criterion(preds, batch)[1]
+                    self.loss += trainer.criterion(preds, features, batch)[1]
 
             # postprocess
             with dt[3]:

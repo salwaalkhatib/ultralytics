@@ -57,7 +57,7 @@ class BaseModel(nn.Module):
             if profile:
                 self._profile_one_layer(m, x, dt)
             if isinstance(m, Detect):
-                features = [feat.detach().clone() for feat in x]
+                features = [feat for feat in x]
             x = m(x)  # run
             y.append(x if m.i in self.save else None)  # save output
             if visualize:

@@ -280,6 +280,7 @@ class YOLO:
         if not overrides.get('resume'):  # manually set model only if not resuming
             self.trainer.model = self.trainer.get_model(weights=self.model if self.ckpt else None, cfg=self.model.yaml)
             self.model = self.trainer.model
+        self.trainer.contr_warmup = 10
         self.trainer.train()
         # update model and cfg after training
         if RANK in {0, -1}:
