@@ -1,8 +1,10 @@
 # Ultralytics YOLO 🚀, GPL-3.0 license
 from copy import copy
+from collections import deque
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from ultralytics.nn.tasks import DetectionModel
 from ultralytics.yolo import v8
@@ -72,7 +74,7 @@ class DetectionTrainer(BaseTrainer):
 
     def criterion(self, preds, contr_feats, batch):
         if not hasattr(self, 'compute_loss'):
-            self.compute_loss = Loss(de_parallel(self.model))
+            self.compute_loss = Loss(de_parallel(self.model), contr_feats, epoch=self.epoch, contr_warmup=self.contr_warmup)
         return self.compute_loss(preds, contr_feats, batch)
 
     def label_loss_items(self, loss_items=None, prefix="train"):
@@ -106,7 +108,7 @@ class DetectionTrainer(BaseTrainer):
 # Criterion class for computing training losses
 class Loss:
 
-    def __init__(self, model):  # model must be de-paralleled
+    def __init__(self, model, contr_feats, epoch, contr_warmup):  # model must be de-paralleled
 
         device = next(model.parameters()).device  # get model device
         h = model.args  # hyperparameters
@@ -119,6 +121,9 @@ class Loss:
         self.no = m.no
         self.reg_max = m.reg_max
         self.device = device
+        self.prototypes = Prototypes(self.nc, contr_feats)
+        self.epoch = epoch
+        self.contr_warmup = contr_warmup
 
         self.use_dfl = m.reg_max > 1
         roll_out_thr = h.min_memory if h.min_memory > 1 else 64 if h.min_memory else 0  # 64 is default
@@ -153,9 +158,41 @@ class Loss:
             # pred_dist = pred_dist.view(b, a, c // 4, 4).transpose(2,3).softmax(3).matmul(self.proj.type(pred_dist.dtype))
             # pred_dist = (pred_dist.view(b, a, c // 4, 4).softmax(2) * self.proj.type(pred_dist.dtype).view(1, 1, -1, 1)).sum(2)
         return dist2bbox(pred_dist, anchor_points, xywh=False)
+    
+    def contrastive_loss_stage(self, contrastive_features, targets):
+        '''
+        Compute contrastive loss between features and centroids
+        contrasitve_features: list of tensors from each detection stage (3) 
+        '''
+        # Indexes to split the three stages in targets
+        st1, st2, st3 = 80*80, (80*80 + 40*40), (80*80 + 40*40 + 20*20)
+        targ_st1, targ_st2, targ_st3 = targets[:, :st1], targets[:, st1:st2], targets[:, st2:st3]
+        centroid_st1, centroid_st2, centroid_st3 = self.prototypes.get_centroids()
+        feat_st1, feat_st2, feat_st3 = contrastive_features
+        loss_input = zip([feat_st1, feat_st2, feat_st3], [targ_st1, targ_st2, targ_st3], [centroid_st1, centroid_st2, centroid_st3])
+        
+        loss_contr = 0
+        for feat, targ, centroid in loss_input:
+            # Compute loss for each stage
+            anchors = feat.transpose(1, -1)
+            anchors = anchors.reshape(-1, anchors.shape[-1])
+            loss_contr += self.contrastive_loss(anchors, centroid, targ)
+
+        return loss_contr
+    
+    def contrastive_loss(self, anchors, centroids, targets, margin=1):
+        device = anchors.device
+        centroids = centroids.to(device)
+        anchor_distances = torch.cdist(anchors, centroids, p=2)
+        gt_labels = torch.zeros_like(anchor_distances, device=device)
+        gt_labels[torch.arange(gt_labels.shape[0]), targets.ravel()] = 1
+        loss = F.hinge_embedding_loss(anchor_distances, gt_labels, margin=margin)
+        
+        return loss.mean()
+
 
     def __call__(self, preds, contr_features, batch):
-        loss = torch.zeros(3, device=self.device)  # box, cls, dfl
+        loss = torch.zeros(4, device=self.device)  # box, cls, dfl, Contrastive
         feats = preds[1] if isinstance(preds, tuple) else preds
         # Concat from P3(80x80=6400), P4(40x40=1600), P5(20x20=400) and split into (16x4, num_classes)
         pred_distri, pred_scores = torch.cat([xi.view(feats[0].shape[0], self.no, -1) for xi in feats], 2).split(
@@ -199,7 +236,63 @@ class Loss:
         loss[1] *= self.hyp.cls  # cls gain
         loss[2] *= self.hyp.dfl  # dfl gain
 
-        return loss.sum() * batch_size, loss.detach()  # loss(box, cls, dfl)
+        # Contrastive loss
+        ## self.prototypes.update_centroids(contr_features, target_labels)
+        ## loss_contrastive = self.contrastive_loss_stage(contr_features, target_labels)
+        if (self.epoch > self.contr_warmup//2) and (self.epoch < self.contr_warmup):
+            self.prototypes.update_centroids(contr_features, target_labels)
+        elif self.epoch >= self.contr_warmup:
+            loss[3] = self.contrastive_loss_stage(contr_features, target_labels)
+            self.prototypes.update_centroids(contr_features, target_labels)
+        
+        loss[3] *= self.hyp.contr_loss
+
+        return loss.sum() * batch_size, loss.detach()  # loss(box, cls, dfl, contrastive)
+
+
+class Prototypes():
+    def __init__(self, num_classes, contr_feats, queue_size=10):
+        self.device = contr_feats[0].device
+        self.queue_size = queue_size
+        self.num_classes = num_classes
+        self.centroids = [torch.zeros(num_classes, feat.shape[1]).to(self.device) for feat in contr_feats]
+        # self.centroids = [torch.rand(num_classes, feat.shape[1]) for feat in contr_feats]
+        self.queues = [torch.zeros(self.queue_size, num_classes, feat.shape[1]).to(self.device) for feat in contr_feats]
+
+    @torch.no_grad()
+    def update_centroids(self, features, targets):
+        '''
+        Updates the centroids of the clusters
+        TO FIX copilot!!!
+        '''
+        # Get targets for each stage of prediction
+        st1, st2, st3 = 80*80, (80*80 + 40*40), (80*80 + 40*40 + 20*20)
+        targ_labels = [targets[:, :st1], targets[:, st1:st2], targets[:, st2:st3]]
+
+        # Update queue
+        for i in range(len(self.centroids)):
+            feats = features[i].transpose(0, 1).reshape(features[i].shape[1], -1)
+            feats = feats.transpose(0, 1)
+            targ = targ_labels[i]
+            queue = self.queues[i]
+            for cl in range(self.num_classes):
+                cl_feats = feats[targ.ravel()==cl, :]
+                num_feats = cl_feats.shape[0]
+                if num_feats >= self.queue_size:
+                    queue[:, cl, :] = torch.cat((cl_feats[:9, :], cl_feats[9:, :].mean(0).unsqueeze(0)), 0)
+                elif (num_feats > 0) and (num_feats <  10):
+                    queue[:, cl, :] = torch.cat((cl_feats[:num_feats, :], queue[num_feats:, cl, :]), 0)
+
+        # Update centroids
+        for i in range(len(self.centroids)):
+            self.centroids[i] = self.queues[i].mean(0)
+
+
+    def get_centroids(self):
+        '''
+        Returns the centroids of the clusters
+        '''
+        return self.centroids
 
 
 def train(cfg=DEFAULT_CFG, use_python=False):
