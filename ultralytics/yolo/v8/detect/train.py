@@ -185,7 +185,7 @@ class Loss:
         centroids = centroids.to(device)
         anchor_distances = torch.cdist(anchors, centroids, p=2)
         gt_labels = torch.zeros_like(anchor_distances, device=device)
-        gt_labels[torch.arange(gt_labels.shape[0]), targets.ravel()] = 1
+        gt_labels[torch.arange(gt_labels.shape[0]), targets.ravel().type(torch.int64)] = 1
         loss = F.hinge_embedding_loss(anchor_distances, gt_labels, margin=margin)
         
         return loss.mean()
@@ -235,6 +235,8 @@ class Loss:
         loss[0] *= self.hyp.box  # box gain
         loss[1] *= self.hyp.cls  # cls gain
         loss[2] *= self.hyp.dfl  # dfl gain
+
+        print(target_labels.shape)
 
         # Contrastive loss
         ## self.prototypes.update_centroids(contr_features, target_labels)
