@@ -159,31 +159,32 @@ class Loss:
             # pred_dist = (pred_dist.view(b, a, c // 4, 4).softmax(2) * self.proj.type(pred_dist.dtype).view(1, 1, -1, 1)).sum(2)
         return dist2bbox(pred_dist, anchor_points, xywh=False)
     
-    def contrastive_loss_stage(self, contrastive_features, targets):
+    def contrastive_loss_stage(self, contrastive_features, targets, fg_mask):
         '''
         Compute contrastive loss between features and centroids
         contrasitve_features: list of tensors from each detection stage (3) 
         '''
         # Indexes to split the three stages in targets
-        st1, st2, st3 = 80*80, (80*80 + 40*40), (80*80 + 40*40 + 20*20)
-        targ_st1, targ_st2, targ_st3 = targets[:, :st1], targets[:, st1:st2], targets[:, st2:st3]
-        centroid_st1, centroid_st2, centroid_st3 = self.prototypes.get_centroids()
         feat_st1, feat_st2, feat_st3 = contrastive_features
-        loss_input = zip([feat_st1, feat_st2, feat_st3], [targ_st1, targ_st2, targ_st3], [centroid_st1, centroid_st2, centroid_st3])
+        st1_sz, st2_sz, st3_sz = feat_st1.shape[-1], feat_st2.shape[-1], feat_st3.shape[-1]
+        st1, st2, st3 = st1_sz*st1_sz, (st1_sz*st1_sz + st2_sz*st2_sz), (st1_sz*st1_sz + st2_sz*st2_sz + st3_sz*st3_sz)
+        targ_st1, targ_st2, targ_st3 = targets[:, :st1], targets[:, st1:st2], targets[:, st2:st3]
+        fg_mask1, fg_mask2, fg_mask3 = fg_mask[:, :st1], fg_mask[:, st1:st2], fg_mask[:, st2:st3]
+        centroid_st1, centroid_st2, centroid_st3 = self.prototypes.get_centroids()
+        loss_input = zip([feat_st1, feat_st2, feat_st3], [targ_st1, targ_st2, targ_st3], [fg_mask1, fg_mask2, fg_mask3], [centroid_st1, centroid_st2, centroid_st3])
         
         loss_contr = 0
-        for feat, targ, centroid in loss_input:
+        for feat, targ, mask, centroid in loss_input:
             # Compute loss for each stage
-            anchors = feat.transpose(1, -1)
-            anchors = anchors.reshape(-1, anchors.shape[-1])
-            loss_contr += self.contrastive_loss(anchors, centroid, targ)
-
+            anchors = feat.view(feat.shape[0], feat.shape[1], -1)
+            anchors = anchors.transpose(1, -1)
+            loss_contr += self.contrastive_loss(anchors[mask], centroid, targ[mask])
         return loss_contr
     
     def contrastive_loss(self, anchors, centroids, targets, margin=1):
         device = anchors.device
         centroids = centroids.to(device)
-        anchor_distances = torch.cdist(anchors, centroids, p=2)
+        anchor_distances = torch.cdist(anchors.float(), centroids, p=2)
         gt_labels = torch.zeros_like(anchor_distances, device=device)
         gt_labels[torch.arange(gt_labels.shape[0]), targets.ravel().type(torch.int64)] = 1
         loss = F.hinge_embedding_loss(anchor_distances, gt_labels, margin=margin)
@@ -218,7 +219,8 @@ class Loss:
         # Why is this taking a pred_scores with Sigmoid not softmax?
         target_labels, target_bboxes, target_scores, fg_mask, _ = self.assigner(
             pred_scores.detach().sigmoid(), (pred_bboxes.detach() * stride_tensor).type(gt_bboxes.dtype),
-            anchor_points * stride_tensor, gt_labels, gt_bboxes, mask_gt)   #(B,8400) labels, (B, 8400, 4) target boxes, (B,8400,80) target class scores(this is not one-hot encoded)
+            anchor_points * stride_tensor, gt_labels, gt_bboxes, mask_gt)   #(B,8400) labels, (B, 8400, 4) target boxes, (B,8400,80) target class scores(this is not one-hot encoded), mask(B, 8400)
+        # fg_mask tells which feature maps are predicting an object
 
         target_bboxes /= stride_tensor
         target_scores_sum = max(target_scores.sum(), 1)
@@ -228,7 +230,7 @@ class Loss:
         loss[1] = self.bce(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
 
         # bbox loss
-        if fg_mask.sum():
+        if fg_mask.sum():   # Checking if there are predictions assigned
             loss[0], loss[2] = self.bbox_loss(pred_distri, pred_bboxes, anchor_points, target_bboxes, target_scores,
                                               target_scores_sum, fg_mask)
 
@@ -236,16 +238,15 @@ class Loss:
         loss[1] *= self.hyp.cls  # cls gain
         loss[2] *= self.hyp.dfl  # dfl gain
 
-        print(target_labels.shape)
-
         # Contrastive loss
         ## self.prototypes.update_centroids(contr_features, target_labels)
         ## loss_contrastive = self.contrastive_loss_stage(contr_features, target_labels)
         if (self.epoch > self.contr_warmup//2) and (self.epoch < self.contr_warmup):
-            self.prototypes.update_centroids(contr_features, target_labels)
+            self.prototypes.update_centroids(contr_features, target_labels, fg_mask)
         elif self.epoch >= self.contr_warmup:
-            loss[3] = self.contrastive_loss_stage(contr_features, target_labels)
-            self.prototypes.update_centroids(contr_features, target_labels)
+            if fg_mask.sum():
+                loss[3] = self.contrastive_loss_stage(contr_features, target_labels, fg_mask)
+            self.prototypes.update_centroids(contr_features, target_labels, fg_mask)
         
         loss[3] *= self.hyp.contr_loss
 
@@ -262,27 +263,30 @@ class Prototypes():
         self.queues = [torch.zeros(self.queue_size, num_classes, feat.shape[1]).to(self.device) for feat in contr_feats]
 
     @torch.no_grad()
-    def update_centroids(self, features, targets):
+    def update_centroids(self, features, targets, fg_mask):
         '''
         Updates the centroids of the clusters
         TO FIX copilot!!!
         '''
         # Get targets for each stage of prediction
-        st1, st2, st3 = 80*80, (80*80 + 40*40), (80*80 + 40*40 + 20*20)
+        st1_sz, st2_sz, st3_sz = features[0].shape[-1], features[1].shape[-1], features[2].shape[-1]
+        st1, st2, st3 = st1_sz*st1_sz, (st1_sz*st1_sz + st2_sz*st2_sz), (st1_sz*st1_sz + st2_sz*st2_sz + st3_sz*st3_sz)
         targ_labels = [targets[:, :st1], targets[:, st1:st2], targets[:, st2:st3]]
+        fg_masks = [fg_mask[:, :st1], fg_mask[:, st1:st2], fg_mask[:, st2:st3]]
 
         # Update queue
         for i in range(len(self.centroids)):
-            feats = features[i].transpose(0, 1).reshape(features[i].shape[1], -1)
-            feats = feats.transpose(0, 1)
-            targ = targ_labels[i]
+            feats = features[i].view(features[i].shape[0], features[i].shape[1], -1)
+            feats = feats.transpose(1, -1)  # (N, 64/128/256)
+            anc_feats = feats[fg_masks[i].bool()]  # Extract only assigned features using mask
+            targ = targ_labels[i][fg_masks[i].bool()]  # Extract corresponding labels
             queue = self.queues[i]
-            for cl in range(self.num_classes):
-                cl_feats = feats[targ.ravel()==cl, :]
+            for cl in range(15):
+                cl_feats = anc_feats[targ==cl]
                 num_feats = cl_feats.shape[0]
-                if num_feats >= self.queue_size:
-                    queue[:, cl, :] = torch.cat((cl_feats[:9, :], cl_feats[9:, :].mean(0).unsqueeze(0)), 0)
-                elif (num_feats > 0) and (num_feats <  10):
+                if num_feats > self.queue_size:
+                    queue[:, cl, :] = torch.cat((cl_feats[:self.queue_size-1, :], cl_feats[self.queue_size:, :].mean(0).unsqueeze(0)), 0)
+                elif (num_feats > 0) and (num_feats <=  self.queue_size):
                     queue[:, cl, :] = torch.cat((cl_feats[:num_feats, :], queue[num_feats:, cl, :]), 0)
 
         # Update centroids
