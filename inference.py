@@ -1,10 +1,13 @@
 from ultralytics import YOLO
 
-PROJECT = 'experiments/contrastive'
-EPOCHS = 50
-CONTRASTIVE_LOSS = 0.05
+PROJECT = 'runs/detect/v8s_hinge-1'
+EPOCHS = 70
+CONTRASTIVE_LOSS = 0.1
 WORKERS = 24
-EXPERIMENT = 'isaid_contrastive' + str(CONTRASTIVE_LOSS) + 'epochs_' + str(EPOCHS)
+MOSAIC_PROB = 1
+CLOSE_MOSAIC = 10
+EXPERIMENT = 'isaid_contr_momen_noCalib' + str(CONTRASTIVE_LOSS) + '_queue10_' + str(EPOCHS) + 'epochs' + '_mosaic' + str(MOSAIC_PROB) + '_closemosaic' + str(CLOSE_MOSAIC)
+CKPT = 'yolov8s.pt'
 
-model = YOLO("runs/detect/isaid_contrastive0.9epochs_502/weights/last.pt")
-model.train(data="isaid.yaml", epochs=EPOCHS, batch=8, save_period=9, workers=12, resume='runs/detect/isaid_contrastive0.9epochs_502/weights/last.pt', name=EXPERIMENT, contr_loss=CONTRASTIVE_LOSS)
+model = YOLO(CKPT)
+model.train(data="isaid.yaml", epochs=EPOCHS, batch=8, save_period=9, workers=WORKERS, name=EXPERIMENT, project=PROJECT, contr_loss=CONTRASTIVE_LOSS, mosaic=MOSAIC_PROB, close_mosaic=CLOSE_MOSAIC)

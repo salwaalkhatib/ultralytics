@@ -66,7 +66,7 @@ class DetectionTrainer(BaseTrainer):
         return model
 
     def get_validator(self):
-        self.loss_names = 'box_loss', 'cls_loss', 'dfl_loss'
+        self.loss_names = 'box_loss', 'cls_loss', 'dfl_loss', 'Contr_loss'
         return v8.detect.DetectionValidator(self.test_loader,
                                             save_dir=self.save_dir,
                                             logger=self.console,
@@ -75,6 +75,7 @@ class DetectionTrainer(BaseTrainer):
     def criterion(self, preds, contr_feats, batch):
         if not hasattr(self, 'compute_loss'):
             self.compute_loss = Loss(de_parallel(self.model), contr_feats, epoch=self.epoch, contr_warmup=self.contr_warmup)
+        # self.compute_loss.epoch = self.epoch
         return self.compute_loss(preds, contr_feats, batch)
 
     def label_loss_items(self, loss_items=None, prefix="train"):
@@ -90,8 +91,8 @@ class DetectionTrainer(BaseTrainer):
             return keys
 
     def progress_string(self):
-        return ('\n' + '%11s' *
-                (4 + len(self.loss_names))) % ('Epoch', 'GPU_mem', *self.loss_names, 'Instances', 'Size')
+        return ('\n' + '%9s' * (4 + len(self.loss_names)) + 
+                '%9s' * len(self.model.names)) % ('Epoch', 'GPU_mem', *self.loss_names, 'Instances', 'Size', *[k[:8] for k in self.model.names.values()])
 
     def plot_training_samples(self, batch, ni):
         plot_images(images=batch["img"],
@@ -124,6 +125,7 @@ class Loss:
         self.prototypes = Prototypes(self.nc, contr_feats)
         self.epoch = epoch
         self.contr_warmup = contr_warmup
+        self.targets_seen = torch.zeros(self.nc, device=self.device)
 
         self.use_dfl = m.reg_max > 1
         roll_out_thr = h.min_memory if h.min_memory > 1 else 64 if h.min_memory else 0  # 64 is default
@@ -178,14 +180,14 @@ class Loss:
             # Compute loss for each stage
             anchors = feat.view(feat.shape[0], feat.shape[1], -1)
             anchors = anchors.transpose(1, -1)
-            loss_contr += self.contrastive_loss(anchors[mask], centroid, targ[mask])
+            loss_contr += self.contrastive_loss(anchors[mask], centroid, targ[mask]) if targ[mask].sum() > 0 else 0
         return loss_contr
     
     def contrastive_loss(self, anchors, centroids, targets, margin=1):
         device = anchors.device
         centroids = centroids.to(device)
-        anchor_distances = torch.cdist(anchors.float(), centroids, p=2)
-        gt_labels = torch.zeros_like(anchor_distances, device=device)
+        anchor_distances = torch.cdist(anchors.float(), centroids, p=1)
+        gt_labels = torch.zeros_like(anchor_distances, device=device) - 1
         gt_labels[torch.arange(gt_labels.shape[0]), targets.ravel().type(torch.int64)] = 1
         loss = F.hinge_embedding_loss(anchor_distances, gt_labels, margin=margin)
         
@@ -234,6 +236,11 @@ class Loss:
             loss[0], loss[2] = self.bbox_loss(pred_distri, pred_bboxes, anchor_points, target_bboxes, target_scores,
                                               target_scores_sum, fg_mask)
 
+        # Keep Track of number of target for each class
+        if fg_mask.sum() > 0:
+            t, c = target_labels[fg_mask.type(torch.bool)].unique(return_counts=True)
+            self.targets_seen[t] += c
+
         loss[0] *= self.hyp.box  # box gain
         loss[1] *= self.hyp.cls  # cls gain
         loss[2] *= self.hyp.dfl  # dfl gain
@@ -250,7 +257,7 @@ class Loss:
         
         loss[3] *= self.hyp.contr_loss
 
-        return loss.sum() * batch_size, loss.detach()  # loss(box, cls, dfl, contrastive)
+        return loss.sum() * batch_size, loss.detach(), self.targets_seen  # loss(box, cls, dfl, contrastive)
 
 
 class Prototypes():
@@ -258,6 +265,8 @@ class Prototypes():
         self.device = contr_feats[0].device
         self.queue_size = queue_size
         self.num_classes = num_classes
+        self.calibrator = PrototypeRecalibrator(num_classes=num_classes)
+        self.momentum = 0.9
         self.centroids = [torch.zeros(num_classes, feat.shape[1]).to(self.device) for feat in contr_feats]
         # self.centroids = [torch.rand(num_classes, feat.shape[1]) for feat in contr_feats]
         self.queues = [torch.zeros(self.queue_size, num_classes, feat.shape[1]).to(self.device) for feat in contr_feats]
@@ -266,7 +275,6 @@ class Prototypes():
     def update_centroids(self, features, targets, fg_mask):
         '''
         Updates the centroids of the clusters
-        TO FIX copilot!!!
         '''
         # Get targets for each stage of prediction
         st1_sz, st2_sz, st3_sz = features[0].shape[-1], features[1].shape[-1], features[2].shape[-1]
@@ -291,7 +299,9 @@ class Prototypes():
 
         # Update centroids
         for i in range(len(self.centroids)):
-            self.centroids[i] = self.queues[i].mean(0)
+            self.centroids[i] = self.momentum * self.centroids[i] + (1 - self.momentum) * self.queues[i].mean(0)
+            # self.calibrator.update(self.centroids[i], features[i], targ_labels[i], fg_masks[i])
+            # self.centroids[i] = self.calibrator.recalibrate(self.centroids[i])
 
 
     def get_centroids(self):
@@ -300,6 +310,36 @@ class Prototypes():
         '''
         return self.centroids
 
+class PrototypeRecalibrator():
+    def __init__(self, beta=0.95, initial_wc=0.01, num_classes=15):
+        self.beta = beta # smoothing coefficient
+        self.wc = [initial_wc for _ in range(num_classes)]
+        self.num_classes = num_classes
+    
+    def update(self, prototypes, features, targets, fg_masks):
+        # update based on a batch of data
+        # use an exponential moving average
+
+        feats = features.view(features.shape[0], features.shape[1], -1)
+        feats = feats.transpose(1, -1)
+        feats = feats[fg_masks.bool()]
+        targets = targets[fg_masks.bool()]
+        for cl in range(self.num_classes):
+            feat_cl = feats[targets==cl]
+            prot_cl = prototypes[cl]
+            N = feat_cl.shape[0]
+            if N == 0:
+                continue
+            exps = 1 / (1 + torch.exp(-1 * torch.matmul(feat_cl, prot_cl.unsqueeze(-1).type(torch.float16))))
+            wc_batch = torch.sum(exps) / N
+            self.wc[cl] = (self.beta * self.wc[cl] + (1 - self.beta) * wc_batch).item()
+    
+    def recalibrate(self, prototypes):
+        # recalibrate prototypes
+        new_prototypes = prototypes.clone()
+        for i in range(self.num_classes):
+            new_prototypes[i] = prototypes[i] + torch.log(torch.tensor(self.wc[i]))
+        return new_prototypes
 
 def train(cfg=DEFAULT_CFG, use_python=False):
     model = cfg.model or "yolov8n.pt"

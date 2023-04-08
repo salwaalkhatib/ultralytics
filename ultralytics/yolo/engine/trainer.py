@@ -266,6 +266,7 @@ class BaseTrainer:
             base_idx = (self.epochs - self.args.close_mosaic) * nb
             self.plot_idx.extend([base_idx, base_idx + 1, base_idx + 2])
         for epoch in range(self.start_epoch, self.epochs):
+            self.targets_per_epoch = torch.zeros(self.model.model[-1].nc, device=self.device)
             self.epoch = epoch
             self.run_callbacks("on_train_epoch_start")
             self.model.train()
@@ -303,7 +304,8 @@ class BaseTrainer:
                 with torch.cuda.amp.autocast(self.amp):
                     batch = self.preprocess_batch(batch)
                     preds, features = self.model(batch["img"])    # (B,144,80,80), (B,144,40,40), (B,144,20,20)   144 = 4 * self.reg_max(16) + num_of_classes
-                    self.loss, self.loss_items = self.criterion(preds, features, batch)
+                    self.loss, self.loss_items, targets_seen = self.criterion(preds, features, batch)
+                    self.targets_per_epoch += targets_seen
                     if rank != -1:
                         self.loss *= world_size
                     self.tloss = (self.tloss * i + self.loss_items) / (i + 1) if self.tloss is not None \
@@ -323,8 +325,8 @@ class BaseTrainer:
                 losses = self.tloss if loss_len > 1 else torch.unsqueeze(self.tloss, 0)
                 if rank in {-1, 0}:
                     pbar.set_description(
-                        ('%11s' * 2 + '%11.4g' * (2 + loss_len)) %
-                        (f'{epoch + 1}/{self.epochs}', mem, *losses, batch["cls"].shape[0], batch["img"].shape[-1]))
+                        ('%9s' * 2 + '%9.4g' * (2 + loss_len) + '%9g' * self.targets_per_epoch.shape[0] ) %
+                        (f'{epoch + 1}/{self.epochs}', mem, *losses, batch["cls"].shape[0], batch["img"].shape[-1], *(self.targets_per_epoch.type(torch.int))))
                     self.run_callbacks('on_batch_end')
                     if self.args.plots and ni in self.plot_idx:
                         self.plot_training_samples(batch, ni)
@@ -344,7 +346,8 @@ class BaseTrainer:
 
                 if self.args.val or final_epoch:
                     self.metrics, self.fitness = self.validate()
-                self.save_metrics(metrics={**self.label_loss_items(self.tloss), **self.metrics, **self.lr})
+                target_metrics = {k : int(v) for k, v in zip(self.model.names.values(), self.targets_per_epoch)}
+                self.save_metrics(metrics={**self.label_loss_items(self.tloss), **self.metrics, **self.lr, **target_metrics})
                 self.stop = self.stopper(epoch + 1, self.fitness)
 
                 # Save model
