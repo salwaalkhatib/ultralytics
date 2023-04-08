@@ -177,10 +177,10 @@ def non_max_suppression(
     assert 0 <= conf_thres <= 1, f'Invalid Confidence threshold {conf_thres}, valid values are between 0.0 and 1.0'
     assert 0 <= iou_thres <= 1, f'Invalid IoU {iou_thres}, valid values are between 0.0 and 1.0'
     if isinstance(prediction, (list, tuple)):  # YOLOv8 model in validation model, output = (inference_out, loss_out)
-        if isinstance(prediction[0], tuple):
-            prediction = prediction[0][0]   # JH I just needed to do this fix
-        else:
-            prediction = prediction[0]  # select only inference output
+        # if isinstance(prediction[0], tuple):
+        #     prediction = prediction[0][0]   # JH I just needed to do this fix
+        # else:
+        prediction = prediction[0]  # select only inference output
 
     device = prediction.device
     mps = 'mps' in device.type  # Apple MPS

@@ -75,7 +75,8 @@ class DetectionTrainer(BaseTrainer):
     def criterion(self, preds, contr_feats, batch):
         if not hasattr(self, 'compute_loss'):
             self.compute_loss = Loss(de_parallel(self.model), contr_feats, epoch=self.epoch, contr_warmup=self.contr_warmup)
-        # self.compute_loss.epoch = self.epoch
+            self.compute_loss.targets_seen = torch.zeros(self.model.model[-1].nc, device=self.device)
+        self.compute_loss.epoch = self.epoch
         return self.compute_loss(preds, contr_feats, batch)
 
     def label_loss_items(self, loss_items=None, prefix="train"):
@@ -125,7 +126,6 @@ class Loss:
         self.prototypes = Prototypes(self.nc, contr_feats)
         self.epoch = epoch
         self.contr_warmup = contr_warmup
-        self.targets_seen = torch.zeros(self.nc, device=self.device)
 
         self.use_dfl = m.reg_max > 1
         roll_out_thr = h.min_memory if h.min_memory > 1 else 64 if h.min_memory else 0  # 64 is default
@@ -238,8 +238,8 @@ class Loss:
 
         # Keep Track of number of target for each class
         if fg_mask.sum() > 0:
-            t, c = target_labels[fg_mask.type(torch.bool)].unique(return_counts=True)
-            self.targets_seen[t] += c
+            t, c = batch['cls'].unique(return_counts=True)
+            self.targets_seen[t.type(torch.long)] += c.to(self.device)
 
         loss[0] *= self.hyp.box  # box gain
         loss[1] *= self.hyp.cls  # cls gain
@@ -253,7 +253,7 @@ class Loss:
         elif self.epoch >= self.contr_warmup:
             if fg_mask.sum():
                 loss[3] = self.contrastive_loss_stage(contr_features, target_labels, fg_mask)
-            self.prototypes.update_centroids(contr_features, target_labels, fg_mask)
+                self.prototypes.update_centroids(contr_features, target_labels, fg_mask)
         
         loss[3] *= self.hyp.contr_loss
 
@@ -277,6 +277,8 @@ class Prototypes():
         Updates the centroids of the clusters
         '''
         # Get targets for each stage of prediction
+        print(features[0].shape, features[1].shape, features[2].shape)
+        print(targets.shape, fg_mask.shape)
         st1_sz, st2_sz, st3_sz = features[0].shape[-1], features[1].shape[-1], features[2].shape[-1]
         st1, st2, st3 = st1_sz*st1_sz, (st1_sz*st1_sz + st2_sz*st2_sz), (st1_sz*st1_sz + st2_sz*st2_sz + st3_sz*st3_sz)
         targ_labels = [targets[:, :st1], targets[:, st1:st2], targets[:, st2:st3]]
@@ -284,6 +286,9 @@ class Prototypes():
 
         # Update queue
         for i in range(len(self.centroids)):
+            if fg_masks[i].sum() == 0:
+                continue
+            print(fg_masks[i].shape, features[i].shape, targ_labels[i].shape)
             feats = features[i].view(features[i].shape[0], features[i].shape[1], -1)
             feats = feats.transpose(1, -1)  # (N, 64/128/256)
             anc_feats = feats[fg_masks[i].bool()]  # Extract only assigned features using mask
@@ -300,8 +305,8 @@ class Prototypes():
         # Update centroids
         for i in range(len(self.centroids)):
             self.centroids[i] = self.momentum * self.centroids[i] + (1 - self.momentum) * self.queues[i].mean(0)
-            # self.calibrator.update(self.centroids[i], features[i], targ_labels[i], fg_masks[i])
-            # self.centroids[i] = self.calibrator.recalibrate(self.centroids[i])
+            self.calibrator.update(self.centroids[i], features[i], targ_labels[i], fg_masks[i])
+            self.centroids[i] = self.calibrator.recalibrate(self.centroids[i])
 
 
     def get_centroids(self):
