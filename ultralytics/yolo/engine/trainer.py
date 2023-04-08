@@ -269,8 +269,6 @@ class BaseTrainer:
             # To count number of instances per class
             # Initialize for Loss class every epoch. If 1st epoch, done inside Loss class init def criterion
             self.targets_per_epoch = torch.zeros(self.model.model[-1].nc, device=self.device)
-            if hasattr(self, 'compute_loss'):
-                self.compute_loss.targets_seen = torch.zeros(self.model.model[-1].nc, device=self.device)
             self.epoch = epoch
             self.run_callbacks("on_train_epoch_start")
             self.model.train()

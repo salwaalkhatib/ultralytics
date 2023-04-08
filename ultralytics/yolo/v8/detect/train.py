@@ -75,7 +75,6 @@ class DetectionTrainer(BaseTrainer):
     def criterion(self, preds, contr_feats, batch):
         if not hasattr(self, 'compute_loss'):
             self.compute_loss = Loss(de_parallel(self.model), contr_feats, epoch=self.epoch, contr_warmup=self.contr_warmup)
-            self.compute_loss.targets_seen = torch.zeros(self.model.model[-1].nc, device=self.device)
         self.compute_loss.epoch = self.epoch
         return self.compute_loss(preds, contr_feats, batch)
 
@@ -168,8 +167,8 @@ class Loss:
         '''
         # Indexes to split the three stages in targets
         feat_st1, feat_st2, feat_st3 = contrastive_features
-        st1_sz, st2_sz, st3_sz = feat_st1.shape[-1], feat_st2.shape[-1], feat_st3.shape[-1]
-        st1, st2, st3 = st1_sz*st1_sz, (st1_sz*st1_sz + st2_sz*st2_sz), (st1_sz*st1_sz + st2_sz*st2_sz + st3_sz*st3_sz)
+        st1_sz, st2_sz, st3_sz = feat_st1.shape[-1] * feat_st1.shape[-2], feat_st2.shape[-1] * feat_st2.shape[-2], feat_st3.shape[-1] * feat_st3.shape[-2]
+        st1, st2, st3 = st1_sz, st1_sz + st2_sz, st1_sz + st2_sz + st3_sz
         targ_st1, targ_st2, targ_st3 = targets[:, :st1], targets[:, st1:st2], targets[:, st2:st3]
         fg_mask1, fg_mask2, fg_mask3 = fg_mask[:, :st1], fg_mask[:, st1:st2], fg_mask[:, st2:st3]
         centroid_st1, centroid_st2, centroid_st3 = self.prototypes.get_centroids()
@@ -195,6 +194,7 @@ class Loss:
 
 
     def __call__(self, preds, contr_features, batch):
+        targets_seen = torch.zeros(self.nc, device=self.device)
         loss = torch.zeros(4, device=self.device)  # box, cls, dfl, Contrastive
         feats = preds[1] if isinstance(preds, tuple) else preds
         # Concat from P3(80x80=6400), P4(40x40=1600), P5(20x20=400) and split into (16x4, num_classes)
@@ -239,7 +239,7 @@ class Loss:
         # Keep Track of number of target for each class
         if fg_mask.sum() > 0:
             t, c = batch['cls'].unique(return_counts=True)
-            self.targets_seen[t.type(torch.long)] += c.to(self.device)
+            targets_seen[t.type(torch.long)] += c.to(self.device)
 
         loss[0] *= self.hyp.box  # box gain
         loss[1] *= self.hyp.cls  # cls gain
@@ -257,7 +257,7 @@ class Loss:
         
         loss[3] *= self.hyp.contr_loss
 
-        return loss.sum() * batch_size, loss.detach(), self.targets_seen  # loss(box, cls, dfl, contrastive)
+        return loss.sum() * batch_size, loss.detach(), targets_seen  # loss(box, cls, dfl, contrastive)
 
 
 class Prototypes():
@@ -277,10 +277,8 @@ class Prototypes():
         Updates the centroids of the clusters
         '''
         # Get targets for each stage of prediction
-        print(features[0].shape, features[1].shape, features[2].shape)
-        print(targets.shape, fg_mask.shape)
-        st1_sz, st2_sz, st3_sz = features[0].shape[-1], features[1].shape[-1], features[2].shape[-1]
-        st1, st2, st3 = st1_sz*st1_sz, (st1_sz*st1_sz + st2_sz*st2_sz), (st1_sz*st1_sz + st2_sz*st2_sz + st3_sz*st3_sz)
+        st1_sz, st2_sz, st3_sz = features[0].shape[-1] * features[0].shape[-2], features[1].shape[-1] * features[1].shape[-2], features[2].shape[-1] * features[2].shape[-2]
+        st1, st2, st3 = st1_sz, st1_sz + st2_sz, st1_sz + st2_sz + st3_sz
         targ_labels = [targets[:, :st1], targets[:, st1:st2], targets[:, st2:st3]]
         fg_masks = [fg_mask[:, :st1], fg_mask[:, st1:st2], fg_mask[:, st2:st3]]
 
@@ -288,7 +286,7 @@ class Prototypes():
         for i in range(len(self.centroids)):
             if fg_masks[i].sum() == 0:
                 continue
-            print(fg_masks[i].shape, features[i].shape, targ_labels[i].shape)
+            # print(fg_masks[i].shape, features[i].shape, targ_labels[i].shape)
             feats = features[i].view(features[i].shape[0], features[i].shape[1], -1)
             feats = feats.transpose(1, -1)  # (N, 64/128/256)
             anc_feats = feats[fg_masks[i].bool()]  # Extract only assigned features using mask
