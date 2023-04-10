@@ -74,7 +74,10 @@ class DetectionTrainer(BaseTrainer):
 
     def criterion(self, preds, contr_feats, batch):
         if not hasattr(self, 'compute_loss'):
-            self.compute_loss = Loss(de_parallel(self.model), contr_feats, epoch=self.epoch, contr_warmup=self.contr_warmup)
+            self.compute_loss = Loss(de_parallel(self.model), contr_feats, epoch=self.epoch, 
+                                     contr_warmup=self.contr_warmup, contr_pnorm=self.contr_pnorm, 
+                                     contr_ema_iters=self.contr_ema_iters, queue_size=self.queue_size)
+            self.compute_loss.iters = 0
         self.compute_loss.epoch = self.epoch
         return self.compute_loss(preds, contr_feats, batch)
 
@@ -109,7 +112,7 @@ class DetectionTrainer(BaseTrainer):
 # Criterion class for computing training losses
 class Loss:
 
-    def __init__(self, model, contr_feats, epoch, contr_warmup):  # model must be de-paralleled
+    def __init__(self, model, contr_feats, epoch, contr_warmup, contr_pnorm, contr_ema_iters, queue_size=10): # model must be de-paralleled
 
         device = next(model.parameters()).device  # get model device
         h = model.args  # hyperparameters
@@ -122,9 +125,11 @@ class Loss:
         self.no = m.no
         self.reg_max = m.reg_max
         self.device = device
-        self.prototypes = Prototypes(self.nc, contr_feats)
+        self.prototypes = Prototypes(self.nc, contr_feats, queue_size=queue_size)
         self.epoch = epoch
         self.contr_warmup = contr_warmup
+        self.contr_pnorm = contr_pnorm
+        self.contr_ema_iters = contr_ema_iters
 
         self.use_dfl = m.reg_max > 1
         roll_out_thr = h.min_memory if h.min_memory > 1 else 64 if h.min_memory else 0  # 64 is default
@@ -185,7 +190,7 @@ class Loss:
     def contrastive_loss(self, anchors, centroids, targets, margin=1):
         device = anchors.device
         centroids = centroids.to(device)
-        anchor_distances = torch.cdist(anchors.float(), centroids, p=1)
+        anchor_distances = torch.cdist(anchors.float(), centroids, p=self.contr_pnorm) # L1/L2 distance
         gt_labels = torch.zeros_like(anchor_distances, device=device) - 1
         gt_labels[torch.arange(gt_labels.shape[0]), targets.ravel().type(torch.int64)] = 1
         loss = F.hinge_embedding_loss(anchor_distances, gt_labels, margin=margin)
@@ -194,6 +199,7 @@ class Loss:
 
 
     def __call__(self, preds, contr_features, batch):
+        self.iters += 1
         targets_seen = torch.zeros(self.nc, device=self.device)
         loss = torch.zeros(4, device=self.device)  # box, cls, dfl, Contrastive
         feats = preds[1] if isinstance(preds, tuple) else preds
@@ -249,11 +255,13 @@ class Loss:
         ## self.prototypes.update_centroids(contr_features, target_labels)
         ## loss_contrastive = self.contrastive_loss_stage(contr_features, target_labels)
         if (self.epoch > self.contr_warmup//2) and (self.epoch < self.contr_warmup):
-            self.prototypes.update_centroids(contr_features, target_labels, fg_mask)
+            if (self.iters % self.contr_ema_iters == 0) and (not self.validate):
+                self.prototypes.update_centroids(contr_features, target_labels, fg_mask)
         elif self.epoch >= self.contr_warmup:
             if fg_mask.sum():
                 loss[3] = self.contrastive_loss_stage(contr_features, target_labels, fg_mask)
-                self.prototypes.update_centroids(contr_features, target_labels, fg_mask)
+                if (self.iters % self.contr_ema_iters == 0) and (not self.validate):
+                    self.prototypes.update_centroids(contr_features, target_labels, fg_mask)
         
         loss[3] *= self.hyp.contr_loss
 
@@ -286,7 +294,6 @@ class Prototypes():
         for i in range(len(self.centroids)):
             if fg_masks[i].sum() == 0:
                 continue
-            # print(fg_masks[i].shape, features[i].shape, targ_labels[i].shape)
             feats = features[i].view(features[i].shape[0], features[i].shape[1], -1)
             feats = feats.transpose(1, -1)  # (N, 64/128/256)
             anc_feats = feats[fg_masks[i].bool()]  # Extract only assigned features using mask
@@ -296,15 +303,16 @@ class Prototypes():
                 cl_feats = anc_feats[targ==cl]
                 num_feats = cl_feats.shape[0]
                 if num_feats > self.queue_size:
-                    queue[:, cl, :] = torch.cat((cl_feats[:self.queue_size-1, :], cl_feats[self.queue_size:, :].mean(0).unsqueeze(0)), 0)
+                    # queue[:, cl, :] = torch.cat((cl_feats[:self.queue_size-1, :], cl_feats[self.queue_size:, :].mean(0).unsqueeze(0)), 0)
+                    queue[:, cl, :] = cl_feats[:self.queue_size, :]
                 elif (num_feats > 0) and (num_feats <=  self.queue_size):
                     queue[:, cl, :] = torch.cat((cl_feats[:num_feats, :], queue[num_feats:, cl, :]), 0)
 
         # Update centroids
         for i in range(len(self.centroids)):
             self.centroids[i] = self.momentum * self.centroids[i] + (1 - self.momentum) * self.queues[i].mean(0)
-            self.calibrator.update(self.centroids[i], features[i], targ_labels[i], fg_masks[i])
-            self.centroids[i] = self.calibrator.recalibrate(self.centroids[i])
+            # self.calibrator.update(self.centroids[i], features[i], targ_labels[i], fg_masks[i])
+            # self.centroids[i] = self.calibrator.recalibrate(self.centroids[i])
 
 
     def get_centroids(self):

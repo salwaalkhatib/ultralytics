@@ -248,7 +248,7 @@ class BaseTrainer:
     def _do_train(self, rank=-1, world_size=1):
         if world_size > 1:
             self._setup_ddp(rank, world_size)
-
+            
         self._setup_train(rank, world_size)
 
         self.epoch_time = None
@@ -267,8 +267,9 @@ class BaseTrainer:
             self.plot_idx.extend([base_idx, base_idx + 1, base_idx + 2])
         for epoch in range(self.start_epoch, self.epochs):
             # To count number of instances per class
-            # Initialize for Loss class every epoch. If 1st epoch, done inside Loss class init def criterion
             self.targets_per_epoch = torch.zeros(self.model.model[-1].nc, device=self.device)
+            if hasattr(self, 'compute_loss'):
+                self.compute_loss.iters = 0
             self.epoch = epoch
             self.run_callbacks("on_train_epoch_start")
             self.model.train()
@@ -347,7 +348,9 @@ class BaseTrainer:
                 final_epoch = (epoch + 1 == self.epochs) or self.stopper.possible_stop
 
                 if self.args.val or final_epoch:
+                    self.compute_loss.validate = True
                     self.metrics, self.fitness = self.validate()
+                    self.compute_loss.validate = False
                 target_metrics = {k : int(v) for k, v in zip(self.model.names.values(), self.targets_per_epoch)}
                 self.save_metrics(metrics={**self.label_loss_items(self.tloss), **self.metrics, **self.lr, **target_metrics})
                 self.stop = self.stopper(epoch + 1, self.fitness)
