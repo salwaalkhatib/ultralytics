@@ -285,6 +285,7 @@ class YOLO:
         self.trainer.contr_pnorm = overrides['contr_pnorm']
         self.trainer.contr_ema_iters = overrides['contr_ema_iters']
         self.trainer.queue_size = overrides['queue_size']
+        self.trainer.contr_calib = overrides['contr_calib']
         self.trainer.train()
         # update model and cfg after training
         if RANK in {0, -1}:

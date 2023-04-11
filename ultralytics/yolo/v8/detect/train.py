@@ -76,7 +76,7 @@ class DetectionTrainer(BaseTrainer):
         if not hasattr(self, 'compute_loss'):
             self.compute_loss = Loss(de_parallel(self.model), contr_feats, epoch=self.epoch, 
                                      contr_warmup=self.contr_warmup, contr_pnorm=self.contr_pnorm, 
-                                     contr_ema_iters=self.contr_ema_iters, queue_size=self.queue_size)
+                                     contr_ema_iters=self.contr_ema_iters, queue_size=self.queue_size, contr_calib=self.contr_calib)
             self.compute_loss.iters = 0
         self.compute_loss.epoch = self.epoch
         return self.compute_loss(preds, contr_feats, batch)
@@ -112,7 +112,7 @@ class DetectionTrainer(BaseTrainer):
 # Criterion class for computing training losses
 class Loss:
 
-    def __init__(self, model, contr_feats, epoch, contr_warmup, contr_pnorm, contr_ema_iters, queue_size=10): # model must be de-paralleled
+    def __init__(self, model, contr_feats, epoch, contr_warmup, contr_pnorm, contr_ema_iters, queue_size=10, contr_calib=False): # model must be de-paralleled
 
         device = next(model.parameters()).device  # get model device
         h = model.args  # hyperparameters
@@ -125,11 +125,13 @@ class Loss:
         self.no = m.no
         self.reg_max = m.reg_max
         self.device = device
-        self.prototypes = Prototypes(self.nc, contr_feats, queue_size=queue_size)
+        self.contr_calib = contr_calib
+        self.prototypes = Prototypes(self.nc, contr_feats, queue_size=queue_size, contr_calib=self.contr_calib)
         self.epoch = epoch
         self.contr_warmup = contr_warmup
         self.contr_pnorm = contr_pnorm
         self.contr_ema_iters = contr_ema_iters
+        self.validate = False
 
         self.use_dfl = m.reg_max > 1
         roll_out_thr = h.min_memory if h.min_memory > 1 else 64 if h.min_memory else 0  # 64 is default
@@ -254,7 +256,7 @@ class Loss:
         # Contrastive loss
         ## self.prototypes.update_centroids(contr_features, target_labels)
         ## loss_contrastive = self.contrastive_loss_stage(contr_features, target_labels)
-        if (self.epoch > self.contr_warmup//2) and (self.epoch < self.contr_warmup):
+        if (self.epoch >= self.contr_warmup//2) and (self.epoch <= self.contr_warmup):
             if (self.iters % self.contr_ema_iters == 0) and (not self.validate):
                 self.prototypes.update_centroids(contr_features, target_labels, fg_mask)
         elif self.epoch >= self.contr_warmup:
@@ -269,11 +271,12 @@ class Loss:
 
 
 class Prototypes():
-    def __init__(self, num_classes, contr_feats, queue_size=10):
+    def __init__(self, num_classes, contr_feats, queue_size=10, contr_calib=False):
         self.device = contr_feats[0].device
         self.queue_size = queue_size
         self.num_classes = num_classes
         self.calibrator = PrototypeRecalibrator(num_classes=num_classes)
+        self.contr_calib = contr_calib
         self.momentum = 0.9
         self.centroids = [torch.zeros(num_classes, feat.shape[1]).to(self.device) for feat in contr_feats]
         # self.centroids = [torch.rand(num_classes, feat.shape[1]) for feat in contr_feats]
@@ -311,8 +314,9 @@ class Prototypes():
         # Update centroids
         for i in range(len(self.centroids)):
             self.centroids[i] = self.momentum * self.centroids[i] + (1 - self.momentum) * self.queues[i].mean(0)
-            # self.calibrator.update(self.centroids[i], features[i], targ_labels[i], fg_masks[i])
-            # self.centroids[i] = self.calibrator.recalibrate(self.centroids[i])
+            if self.contr_calib:
+                self.calibrator.update(self.centroids[i], features[i], targ_labels[i], fg_masks[i])
+                self.centroids[i] = self.calibrator.recalibrate(self.centroids[i])
 
 
     def get_centroids(self):

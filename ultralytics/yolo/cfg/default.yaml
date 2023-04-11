@@ -41,6 +41,7 @@ contr_pnorm: 1 #p-norm for contrastive loss
 contr_warmup: 10  # Warmup iters before centroid updates
 contr_ema_iters: 100  # iters per centroid update
 queue_size: 10  
+contr_calib: False  # Calibration or not in contrastive loss
 
 # Val/Test settings ----------------------------------------------------------------------------------------------------
 val: True  # validate/test during training
