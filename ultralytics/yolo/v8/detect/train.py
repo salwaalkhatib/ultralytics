@@ -256,15 +256,21 @@ class Loss:
         # Contrastive loss
         ## self.prototypes.update_centroids(contr_features, target_labels)
         ## loss_contrastive = self.contrastive_loss_stage(contr_features, target_labels)
-        if (self.epoch >= self.contr_warmup//2) and (self.epoch <= self.contr_warmup):
+        if (self.epoch >= self.contr_warmup//2) and (self.epoch < self.contr_warmup):
+            # Update queue
+            if not self.validate:
+                self.prototypes.update_queue(contr_features, target_labels, fg_mask)
             if (self.iters % self.contr_ema_iters == 0) and (not self.validate):
                 self.prototypes.update_centroids(contr_features, target_labels, fg_mask)
+                
         elif self.epoch >= self.contr_warmup:
             if fg_mask.sum():
                 loss[3] = self.contrastive_loss_stage(contr_features, target_labels, fg_mask)
+                if not self.validate:
+                    self.prototypes.update_queue(contr_features, target_labels, fg_mask)
                 if (self.iters % self.contr_ema_iters == 0) and (not self.validate):
                     self.prototypes.update_centroids(contr_features, target_labels, fg_mask)
-        
+                    
         loss[3] *= self.hyp.contr_loss
 
         return loss.sum() * batch_size, loss.detach(), targets_seen  # loss(box, cls, dfl, contrastive)
@@ -283,7 +289,7 @@ class Prototypes():
         self.queues = [torch.zeros(self.queue_size, num_classes, feat.shape[1]).to(self.device) for feat in contr_feats]
 
     @torch.no_grad()
-    def update_centroids(self, features, targets, fg_mask):
+    def update_queue(self, features, targets, fg_mask):
         '''
         Updates the centroids of the clusters
         '''
@@ -311,7 +317,18 @@ class Prototypes():
                 elif (num_feats > 0) and (num_feats <=  self.queue_size):
                     queue[:, cl, :] = torch.cat((cl_feats[:num_feats, :], queue[num_feats:, cl, :]), 0)
 
-        # Update centroids
+
+    @torch.no_grad()
+    def update_centroids(self, features, targets, fg_mask):
+        '''
+        Updates the centroids of the clusters
+        '''
+        # Get targets for each stage of prediction
+        st1_sz, st2_sz, st3_sz = features[0].shape[-1] * features[0].shape[-2], features[1].shape[-1] * features[1].shape[-2], features[2].shape[-1] * features[2].shape[-2]
+        st1, st2, st3 = st1_sz, st1_sz + st2_sz, st1_sz + st2_sz + st3_sz
+        targ_labels = [targets[:, :st1], targets[:, st1:st2], targets[:, st2:st3]]
+        fg_masks = [fg_mask[:, :st1], fg_mask[:, st1:st2], fg_mask[:, st2:st3]]
+
         for i in range(len(self.centroids)):
             self.centroids[i] = self.momentum * self.centroids[i] + (1 - self.momentum) * self.queues[i].mean(0)
             if self.contr_calib:
