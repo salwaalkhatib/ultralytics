@@ -3,7 +3,7 @@ import argparse
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='YOLO args')
-    parser.add_argument('--project', type=str, default='runs/detect/v8s-Contr_new', help='path to dataset root')
+    parser.add_argument('--project', type=str, default='runs/detect/v8s-contr_logit', help='path to dataset root')
     parser.add_argument('--experiment', type=str, default='isaid_contr_momen_', help='Experiment name head')
     parser.add_argument('--checkpoint', type=str, default='yolov8s.pt', help='YOLO model checkpoint')
     parser.add_argument('--epochs', default=70, type=int, help='Epochs')
