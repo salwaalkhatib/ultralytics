@@ -5,7 +5,6 @@ slurm_train
 slurm_val
 experiments
 inference_copy.py
-ops_salwa.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

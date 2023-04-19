@@ -281,13 +281,13 @@ class Prototypes():
         self.device = contr_feats[0].device
         self.queue_size = queue_size
         self.num_classes = num_classes
-        self.calibrator = PrototypeRecalibrator(cls_num_list=[113, 119, 1094, 1359, 1302, 4831, 228, 147, 18, 217, 139, 453, 57081, 506, 1219], num_classes=num_classes)
+        # self.calibrator = PrototypeRecalibrator(cls_num_list=[113, 119, 1094, 1359, 1302, 4831, 228, 147, 18, 217, 139, 453, 57081, 506, 1219], num_classes=num_classes)
         # Validation stats
         # self.calibrator = PrototypeRecalibrator(cls_num_list = [28286, 6952, 473, 2012, 409, 454, 1088, 19850, 161865, 205, 1410, 377, 622, 6436, 5000], )
         # # Training stats
         # self.calibrator = PrototypeRecalibrator(cls_num_list = [79124, 13007, 1122, 6445, 1487, 1175, 4455, 80708, 474600, 1437, 4907, 955, 1574, 18437, 14995])
         # Bbox size class stats
-        # self.calibrator = PrototypeRecalibrator(cls_num_list = [113, 119, 1094, 1359, 1302, 4831, 228, 147, 18, 217, 139, 453, 57081, 506, 1219])
+        self.calibrator = PrototypeRecalibrator(cls_num_list = [113, 119, 1094, 1359, 1302, 4831, 228, 147, 18, 217, 139, 453, 57081, 506, 1219])
         self.contr_calib = contr_calib
         self.momentum = 0.9
         self.centroids = [torch.zeros(num_classes, feat.shape[1]).to(self.device) for feat in contr_feats]
@@ -338,7 +338,7 @@ class Prototypes():
         for i in range(len(self.centroids)):
             self.centroids[i] = self.momentum * self.centroids[i] + (1 - self.momentum) * self.queues[i].mean(0)
             if self.contr_calib:
-                self.calibrator.update(self.centroids, features, targ_labels, fg_masks)
+                # self.calibrator.update(self.centroids, features, targ_labels, fg_masks)
                 self.centroids = self.calibrator.recalibrate(self.centroids)
 
     def get_centroids(self):
@@ -347,63 +347,62 @@ class Prototypes():
         '''
         return self.centroids
 
-# class PrototypeRecalibrator():
-#     def __init__(self, cls_num_list, tau=1, weight=None):
-        # cls_num_list = torch.cuda.FloatTensor(cls_num_list)
-        # cls_p_list = cls_num_list / cls_num_list.sum()
-        # m_list = tau * torch.log(cls_p_list)
-        # self.m_list = m_list.view(1, -1)
-        # self.weight= weight
-
-#     def recalibrate(self, prototypes):
-#         # recalibrate prototypes
-#         new_prototypes = prototypes.clone()
-#         new_prototypes = prototypes.permute(1, 0) + self.m_list.squeeze(0)
-#         return new_prototypes.permute(1,0)
-
-
 class PrototypeRecalibrator():
-    def __init__(self, cls_num_list, beta=0.95, initial_wc=0.01, num_classes=15):
-        self.beta = beta # smoothing coefficient
-        self.wc = [[initial_wc for _ in range(num_classes)] for _ in range(3)]
-        self.num_classes = num_classes
+    def __init__(self, cls_num_list, tau=1, weight=None):
+        cls_num_list = torch.cuda.FloatTensor(cls_num_list)
+        cls_p_list = cls_num_list / cls_num_list.sum()
+        m_list = tau * torch.log(cls_p_list)
+        self.m_list = m_list.view(1, -1)
+        self.weight= weight
 
-        # cls_num_list = torch.cuda.FloatTensor(cls_num_list)
-        # cls_p_list = cls_num_list / cls_num_list.sum()
-        # m_list = 1.0 * torch.log(cls_p_list)
-        # self.m_list = m_list.view(1, -1)
-        
-    
-    def update(self, prototypes, features, targets, fg_masks):
-        # update based on a batch of data
-        # use an exponential moving average
-
-        for stage in range(len(self.wc)):
-            st_feats, st_targets, st_fg_masks, st_prototypes = features[stage], targets[stage], fg_masks[stage], prototypes[stage]
-            feats = st_feats.view(st_feats.shape[0], st_feats.shape[1], -1)
-            feats = feats.transpose(1, -1)
-            feats = feats[st_fg_masks.bool()]
-            st_targets = st_targets[st_fg_masks.bool()]
-            for cl in range(self.num_classes):
-                feat_cl = feats[st_targets==cl]
-                prot_cl = st_prototypes[cl]
-                N = feat_cl.shape[0]
-                if N == 0:
-                    continue
-                exps = 1 / (1 + torch.exp(-1 * torch.matmul(feat_cl, prot_cl.unsqueeze(-1).type(torch.float16))))
-                wc_batch = torch.sum(exps) / N
-                self.wc[stage][cl] = (self.beta * self.wc[stage][cl] + (1 - self.beta) * wc_batch).item()
-    
     def recalibrate(self, prototypes):
         # recalibrate prototypes
-        new_prototypes = []
-        for stage in range(len(self.wc)):
-            st_prototypes = prototypes[stage]
-            st_new_prototypes = st_prototypes.clone()
-            for i in range(self.num_classes):
-                st_new_prototypes[i] = st_prototypes[i] + torch.log(torch.tensor(self.wc[stage][i]))
-            new_prototypes.append(st_new_prototypes)
-        return new_prototypes
+        new_prototypes = prototypes.clone()
+        new_prototypes = prototypes.permute(1, 0) + self.m_list.squeeze(0)
+        return new_prototypes.permute(1,0)
+
+
+# class PrototypeRecalibrator():
+#     def __init__(self, cls_num_list, beta=0.95, initial_wc=0.01, num_classes=15):
+#         self.beta = beta # smoothing coefficient
+#         self.wc = [[initial_wc for _ in range(num_classes)] for _ in range(3)]
+#         self.num_classes = num_classes
+
+#         cls_num_list = torch.cuda.FloatTensor(cls_num_list)
+#         cls_p_list = cls_num_list / cls_num_list.sum()
+#         m_list = 1.0 * torch.log(cls_p_list)
+#         self.m_list = m_list.view(1, -1)
+    
+#     def update(self, prototypes, features, targets, fg_masks):
+#         # update based on a batch of data
+#         # use an exponential moving average
+
+#         for stage in range(len(self.wc)):
+#             st_feats, st_targets, st_fg_masks, st_prototypes = features[stage], targets[stage], fg_masks[stage], prototypes[stage]
+#             feats = st_feats.view(st_feats.shape[0], st_feats.shape[1], -1)
+#             feats = feats.transpose(1, -1)
+#             feats = feats[st_fg_masks.bool()]
+#             st_targets = st_targets[st_fg_masks.bool()]
+#             for cl in range(self.num_classes):
+#                 feat_cl = feats[st_targets==cl]
+#                 prot_cl = st_prototypes[cl]
+#                 N = feat_cl.shape[0]
+#                 if N == 0:
+#                     continue
+#                 exps = 1 / (1 + torch.exp(-1 * torch.matmul(feat_cl, prot_cl.unsqueeze(-1).type(torch.float16))))
+#                 wc_batch = torch.sum(exps) / N
+#                 self.wc[stage][cl] = (self.beta * self.wc[stage][cl] + (1 - self.beta) * wc_batch).item()
+    
+#     def recalibrate(self, prototypes, alpha=0.5):
+#         # recalibrate prototypes
+#         new_prototypes = []
+#         for stage in range(len(self.wc)):
+#             st_prototypes = prototypes[stage]
+#             st_new_prototypes = st_prototypes.clone()
+#             for i in range(self.num_classes):
+#                 st_new_prototypes[i] = st_prototypes[i] + (alpha * torch.log(torch.tensor(self.wc[stage][i])) + (1 - alpha) * self.m_list.squeeze(0)[i])
+#             new_prototypes.append(st_new_prototypes)
+#         return new_prototypes
 
 
 def train(cfg=DEFAULT_CFG, use_python=False):
