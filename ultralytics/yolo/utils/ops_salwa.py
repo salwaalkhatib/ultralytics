@@ -424,12 +424,11 @@ def non_max_suppression(
     confidence, classes1 = prediction[:, 4:mi].max(1, keepdim=False)
     # filter predictions tensor based on class confidence and corresponsing conf_thresh_per_class
     # xc = confidence > conf_thresh_per_class[classes1] # candidates
-    # xc = prediction[:, 4:mi].amax(1) > conf_thresh_per_class[classes1] # candidates
+    xc = prediction[:, 4:mi].amax(1) > conf_thresh_per_class[classes1] # candidates
     # data type of conf_thresh_per_class elements
     # print(conf_thresh_per_class[classes1][0, 0].item())
     # print(conf_thres)
-    conf_thres = 0.25
-    xc = prediction[:, 4:mi].amax(1) > conf_thres  # candidates
+    # xc = prediction[:, 4:mi].amax(1) > conf_thres  # candidates
     # ####################################################################################################################  
 
     # Settings
@@ -463,14 +462,14 @@ def non_max_suppression(
         box = xywh2xyxy(box)  # center_x, center_y, width, height) to (x1, y1, x2, y2)
         if multi_label:
             conf, new_classes = cls.max(1, keepdim=True)
-            # i, j = (cls > conf_thresh_per_class[new_classes]).nonzero(as_tuple=False).T
-            i, j = (cls > conf_thres).nonzero(as_tuple=False).T
+            i, j = (cls > conf_thresh_per_class[new_classes]).nonzero(as_tuple=False).T
+            # i, j = (cls > conf_thres).nonzero(as_tuple=False).T
             x = torch.cat((box[i], x[i, 4 + j, None], j[:, None].float(), mask[i]), 1)
         else:  # best class only
             conf, j = cls.max(1, keepdim=True)
-            # index = conf.view(-1) > conf_thresh_per_class[j.view(-1)]
-            x = torch.cat((box, conf, j.float(), mask), 1)[conf.view(-1) > conf_thres]
-            # x = torch.cat((box, conf, j.float(), mask), 1)[index]
+            index = conf.view(-1) > conf_thresh_per_class[j.view(-1)]
+            # x = torch.cat((box, conf, j.float(), mask), 1)[conf.view(-1) > conf_thres]
+            x = torch.cat((box, conf, j.float(), mask), 1)[index]
 
         # Filter by class
         if classes is not None:

@@ -10,7 +10,7 @@ if __name__ == '__main__':
     parser.add_argument('--contr_loss', default=0.1, type=float, help='Weightage for contrastive loss')
     parser.add_argument('--mosaic_prob', default=1, type=float, help='Mosaic probability')
     parser.add_argument('--close_mosaic', default=10, type=int, help='Epochs to close mosaic')
-    parser.add_argument('--contr_pnorm', default=1, type=int, help='p-norm of contrastive loss')
+    parser.add_argument('--contr_pnorm', default=2, type=int, help='p-norm of contrastive loss')
     parser.add_argument('--contr_warmup_epochs', default=10, type=int, help='Epochs towarmup before contrastive loss')
     parser.add_argument('--queue_size', default=10, type=int, help='Queue size')
     parser.add_argument('--contr_ema_iters', default=100, type=int, help='Iterations before centroid ema iters')
@@ -18,7 +18,7 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    WORKERS = 16
+    WORKERS = 24
     EPOCHS = args.epochs
     CKPT = args.checkpoint
     CONTR_WARMUP = args.contr_warmup_epochs
