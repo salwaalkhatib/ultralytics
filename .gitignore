@@ -1,7 +1,6 @@
 # Jameel Hassan
 data
 cluster_out
-slurm_script
 experiments
 runs
 
@@ -140,7 +139,7 @@ dmypy.json
 
 # datasets and projects
 datasets/
-runs/
+runs
 wandb/
 
 .DS_Store
