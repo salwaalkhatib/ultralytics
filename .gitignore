@@ -3,7 +3,6 @@ data
 cluster_out
 experiments
 runs
-readme_figs
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
