@@ -36,6 +36,12 @@ overlap_mask: True  # masks should overlap during training (segment train only)
 mask_ratio: 4  # mask downsample ratio (segment train only)
 # Classification
 dropout: 0.0  # use dropout regularization (classify train only)
+### Contrastive loss hypers
+contr_pnorm: 1 #p-norm for contrastive loss
+contr_warmup: 10  # Warmup iters before centroid updates
+contr_ema_iters: 100  # iters per centroid update
+queue_size: 10  
+contr_calib: False  # Calibration or not in contrastive loss
 
 # Val/Test settings ----------------------------------------------------------------------------------------------------
 val: True  # validate/test during training
@@ -88,6 +94,7 @@ warmup_bias_lr: 0.1  # warmup initial bias lr
 box: 7.5  # box loss gain
 cls: 0.5  # cls loss gain (scale with pixels)
 dfl: 1.5  # dfl loss gain
+contr_loss: 1.0
 fl_gamma: 0.0  # focal loss gamma (efficientDet default gamma=1.5)
 label_smoothing: 0.0  # label smoothing (fraction)
 nbs: 64  # nominal batch size

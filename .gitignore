@@ -1,7 +1,6 @@
 # Jameel Hassan
 data
 cluster_out
-slurm_script
 experiments
 
 # Byte-compiled / optimized / DLL files
@@ -139,7 +138,7 @@ dmypy.json
 
 # datasets and projects
 datasets/
-runs/
+runs
 wandb/
 
 .DS_Store
