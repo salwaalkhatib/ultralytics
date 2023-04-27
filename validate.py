@@ -17,7 +17,4 @@ if __name__ == '__main__':
     model = YOLO(CKPT)
 
     PROJECT = 'runs/detect/valsApr27'
-    metrics = model.val(save_json=True, project=PROJECT, name=EXP_NAME+'thisGIOU_0.001')  # evaluate model performance on the validation set
-
-    # PROJECT = 'runs/detect/predictionsApr27'
-    # results = model.predict(source="data/test/images/", save_txt=True, save_conf=True, project=PROJECT, conf=0.001, name=EXP_NAME+'GIOU_0.001')  # run inference on the validation set
+    metrics = model.val(save_json=True, project=PROJECT, name=EXP_NAME)  # evaluate model performance on the validation set
