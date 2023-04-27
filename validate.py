@@ -1,14 +1,23 @@
 from ultralytics import YOLO
 import os
+import argparse
 
-PROJECT = 'runs/detect/vals'
-EPOCHS = 70
-CONTRASTIVE_LOSS = 0.2
-WORKERS = 16
-CKPT = 'runs/detect/v8s-ContrNew-hinge2/shortlist/isaid_contr_momen_Calib_0.2queue50_emaIters100_70epochs_mosaic1.0_closemosaic5/weights/best.pt'
-EXP_NAME = os.path.split(os.path.split(CKPT)[0])[0].split('/')[-1]
-print(CKPT)
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='YOLO args')
+    parser.add_argument('--checkpoint', type=str, default='runs/detect/v8s-BCE/trainVal_contr_momen_SingleStage_BS10_noValCalib_0.2queue50_emaIters200_70epochs_mosaic1.0_closemosaic52/weights/best.pt', help='YOLO model checkpoint')
+    args = parser.parse_args()
 
-model = YOLO(CKPT)
-metrics = model.val(save_json=True, project=PROJECT, conf=0.2, name=EXP_NAME+'NMS0.2')  # evaluate model performance on the validation set
-# results = model(source="data/val/images/", save_json=True, save_txt=True, save_conf=True)  # run inference on the validation set
+    EPOCHS = 70
+    CONTRASTIVE_LOSS = 0.2
+    WORKERS = 16
+    CKPT = args.checkpoint
+    EXP_NAME = os.path.split(os.path.split(CKPT)[0])[0].split('/')[-1]
+    print(CKPT)
+
+    model = YOLO(CKPT)
+
+    PROJECT = 'runs/detect/valsApr27'
+    metrics = model.val(save_json=True, project=PROJECT, name=EXP_NAME+'thisGIOU_0.001')  # evaluate model performance on the validation set
+
+    # PROJECT = 'runs/detect/predictionsApr27'
+    # results = model.predict(source="data/test/images/", save_txt=True, save_conf=True, project=PROJECT, conf=0.001, name=EXP_NAME+'GIOU_0.001')  # run inference on the validation set

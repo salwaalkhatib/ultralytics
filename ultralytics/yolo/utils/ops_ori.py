@@ -128,230 +128,6 @@ def make_divisible(x, divisor):
         divisor = int(divisor.max())  # to int
     return math.ceil(x / divisor) * divisor
 
-def nms_giou(dets, conf, thresh, classes):
-    """
-    greedily select boxes with high confidence and overlap with current maximum <= thresh
-    rule out overlap >= thresh
-    :param dets: [[x1, y1, x2, y2 score]]
-    :param thresh: retain overlap < thresh
-    :return: indexes to keep
-    """
-    if dets.shape[0] == 0:
-        return []
-    x1 = dets[:, 0]
-    y1 = dets[:, 1]
-    x2 = dets[:, 2]
-    y2 = dets[:, 3]
-    scores = conf
-    areas = (x2 - x1 + 1) * (y2 - y1 + 1)
-    order = scores.argsort()[::-1]
-    keep = []
-    while order.size > 0:
-        i = order[0]
-        keep.append(i)
-        xx1 = np.maximum(x1[i], x1[order[1:]])
-        yy1 = np.maximum(y1[i], y1[order[1:]])
-        xx2 = np.minimum(x2[i], x2[order[1:]])
-        yy2 = np.minimum(y2[i], y2[order[1:]])
-        w = np.maximum(0.0, xx2 - xx1 + 1)
-        h = np.maximum(0.0, yy2 - yy1 + 1)
-        inter = w * h
-        union = (areas[i] + areas[order[1:]] - inter)
-        iou = inter / union
-        # Compute GIoU
-        # enclose_x1y1 = np.minimum(x1[i], x1[order[1:]])
-        # enclose_y1y2 = np.minimum(y1[i], y1[order[1:]])
-        # enclose_x2y2 = np.maximum(x2[i], x2[order[1:]])
-        wb = np.maximum(x2[i], x2[order[1:]]) - np.minimum(x1[i], x1[order[1:]])
-        hb = np.maximum(y2[i], y2[order[1:]]) - np.minimum(y1[i], y1[order[1:]])
-        enclose_area = wb * hb + 1e-8
-        giou = iou - (enclose_area - union) / enclose_area
-        this_threshold = thresh[int(classes[i].item())]
-        inds = np.where(giou <= this_threshold)[0]
-        order = order[inds + 1]
-    return keep
- 
-def nms_py(dets, conf, thresh, classes):
-    """
-    greedily select boxes with high confidence and overlap with current maximum <= thresh
-    rule out overlap >= thresh
-    :param dets: [[x1, y1, x2, y2 score]]
-    :param thresh: retain overlap < thresh
-    :return: indexes to keep
-    """
-    if dets.shape[0] == 0:
-        return []
-    x1 = dets[:, 0]
-    y1 = dets[:, 1]
-    x2 = dets[:, 2]
-    y2 = dets[:, 3]
-    scores = conf
-    areas = (x2 - x1 + 1) * (y2 - y1 + 1)
-    order = scores.argsort()[::-1]
-    keep = []
-    while order.size > 0:
-        i = order[0]
-        keep.append(i)
-        xx1 = np.maximum(x1[i], x1[order[1:]])
-        yy1 = np.maximum(y1[i], y1[order[1:]])
-        xx2 = np.minimum(x2[i], x2[order[1:]])
-        yy2 = np.minimum(y2[i], y2[order[1:]])
-        w = np.maximum(0.0, xx2 - xx1 + 1)
-        h = np.maximum(0.0, yy2 - yy1 + 1)
-        inter = w * h
-        ovr = inter / (areas[i] + areas[order[1:]] - inter)
-        this_threshold = thresh[int(classes[i].item())]
-        inds = np.where(ovr <= this_threshold)[0]
-        # inds = np.where(ovr <= thresh[i])[0]
-        order = order[inds + 1]
-    return keep
-
-def nms_iol(dets, conf, thresh, classes):
-    """
-    greedily select boxes with high confidence and overlap with current maximum <= thresh
-    rule out overlap >= thresh
-    :param dets: [[x1, y1, x2, y2 score]]
-    :param thresh: retain overlap < thresh
-    :return: indexes to keep
-    """
-    if dets.shape[0] == 0:
-        return []
-    x1 = dets[:, 0]
-    y1 = dets[:, 1]
-    x2 = dets[:, 2]
-    y2 = dets[:, 3]
-    scores = conf
-    areas = (x2 - x1 + 1) * (y2 - y1 + 1)
-    order = scores.argsort()[::-1]
-    keep = []
-    while order.size > 0:
-        i = order[0]
-        keep.append(i)
-        xx1 = np.maximum(x1[i], x1[order[1:]])
-        yy1 = np.maximum(y1[i], y1[order[1:]])
-        xx2 = np.minimum(x2[i], x2[order[1:]])
-        yy2 = np.minimum(y2[i], y2[order[1:]])
-        w = np.maximum(0.0, xx2 - xx1 + 1)
-        h = np.maximum(0.0, yy2 - yy1 + 1)
-        inter = w * h
-        ovr = inter / np.minimum(areas[i], areas[order[1:]])
-        this_threshold = thresh[int(classes[i].item())]
-        inds = np.where(ovr <= this_threshold)[0]
-        # inds = np.where(ovr <= thresh[i])[0]
-        order = order[inds + 1]
-    return keep
-
-def bbox_overlaps_ciou(bboxes1, bboxes2):
-    # turn to torch tensor
-    bboxes1 = torch.tensor(bboxes1).unsqueeze(0)
-    bboxes2 = torch.tensor(bboxes2)
-
-    
-
-    rows = bboxes1.shape[0]
-    cols = bboxes2.shape[0]
-    cious = torch.zeros((rows, cols))
-    if rows * cols == 0:
-        return cious
-    exchange = False
-    if bboxes1.shape[0] > bboxes2.shape[0]:
-        bboxes1, bboxes2 = bboxes2, bboxes1
-        cious = torch.zeros((cols, rows))
-        exchange = True
-
-    w1 = bboxes1[:, 2] - bboxes1[:, 0]
-    h1 = bboxes1[:, 3] - bboxes1[:, 1]
-    w2 = bboxes2[:, 2] - bboxes2[:, 0]
-    h2 = bboxes2[:, 3] - bboxes2[:, 1]
-
-    area1 = w1 * h1
-    area2 = w2 * h2
-
-    center_x1 = (bboxes1[:, 2] + bboxes1[:, 0]) / 2
-    center_y1 = (bboxes1[:, 3] + bboxes1[:, 1]) / 2
-    center_x2 = (bboxes2[:, 2] + bboxes2[:, 0]) / 2
-    center_y2 = (bboxes2[:, 3] + bboxes2[:, 1]) / 2
-
-    inter_max_xy = torch.min(bboxes1[:, 2:],bboxes2[:, 2:])
-    inter_min_xy = torch.max(bboxes1[:, :2],bboxes2[:, :2])
-    out_max_xy = torch.max(bboxes1[:, 2:],bboxes2[:, 2:])
-    out_min_xy = torch.min(bboxes1[:, :2],bboxes2[:, :2])
-
-    inter = torch.clamp((inter_max_xy - inter_min_xy), min=0)
-    inter_area = inter[:, 0] * inter[:, 1]
-    inter_diag = (center_x2 - center_x1)**2 + (center_y2 - center_y1)**2
-    outer = torch.clamp((out_max_xy - out_min_xy), min=0)
-    outer_diag = (outer[:, 0] ** 2) + (outer[:, 1] ** 2)
-    union = area1+area2-inter_area
-    u = (inter_diag) / outer_diag
-    iou = inter_area / union
-    v = (4 / (math.pi ** 2)) * torch.pow((torch.atan(w2 / h2) - torch.atan(w1 / h1)), 2)
-    with torch.no_grad():
-        S = 1 - iou
-        alpha = v / (S + v)
-    cious = iou - (u + alpha * v)
-    cious = torch.clamp(cious,min=-1.0,max = 1.0)
-    if exchange:
-        cious = cious.T
-    return cious
-
-
-def nms_ciou(dets, conf, thresh, classes):
-    """
-    greedily select boxes with high confidence and overlap with current maximum <= thresh
-    rule out overlap >= thresh
-    :param dets: [[x1, y1, x2, y2 score]]
-    :param conf: confidence scores
-    :param thresh: retain overlap < thresh
-    :param classes: class labels
-    :return: indexes to keep
-    """
-    if dets.shape[0] == 0:
-        return []
-    x1 = dets[:, 0]
-    y1 = dets[:, 1]
-    x2 = dets[:, 2]
-    y2 = dets[:, 3]
-    scores = conf
-    areas = (x2 - x1 + 1) * (y2 - y1 + 1)
-    order = scores.argsort()[::-1]
-    keep = []
-    while order.size > 0:
-        i = order[0]
-        keep.append(i)
-        # xx1 = np.maximum(x1[i], x1[order[1:]])
-        # yy1 = np.maximum(y1[i], y1[order[1:]])
-        # xx2 = np.minimum(x2[i], x2[order[1:]])
-        # yy2 = np.minimum(y2[i], y2[order[1:]])
-        # w = np.maximum(0.0, xx2 - xx1 + 1)
-        # h = np.maximum(0.0, yy2 - yy1 + 1)
-        # inter = w * h
-        ciou = bbox_overlaps_ciou(dets[i], dets[order[1:]])
-        # print positive cious
-        # iou = inter / (areas[i] + areas[order[1:]] - inter)
-        this_threshold = thresh[int(classes[i].item())]
-        # # compute minimum enclosing box
-        # c_x1 = np.minimum(dets[i, 0], dets[order, 0])
-        # c_y1 = np.minimum(dets[i, 1], dets[order, 1])
-        # c_x2 = np.maximum(dets[i, 2], dets[order, 2])
-        # c_y2 = np.maximum(dets[i, 3], dets[order, 3])
-        # c_w = np.maximum(0.0, c_x2 - c_x1 + 1)
-        # c_h = np.maximum(0.0, c_y2 - c_y1 + 1)
-        # c_area = c_w * c_h + 1e-16
-        # # compute distance between centers
-        # cx = (dets[i, 0] + dets[i, 2]) / 2.0
-        # cy = (dets[i, 1] + dets[i, 3]) / 2.0
-        # c_cx = (dets[order, 0] + dets[order, 2]) / 2.0
-        # c_cy = (dets[order, 1] + dets[order, 3]) / 2.0
-        # rho2 = (c_cx - cx) ** 2 + (c_cy - cy) ** 2
-        # # compute ciou
-        # v = (4.0 / np.pi ** 2) * np.square(np.arctan(c_w / c_h) - np.arctan(w / h))
-        # alpha = v / (1.0 - iou + v + 1e-16)
-        # ciou = iou - rho2 / c_area - alpha * v
-
-        inds = np.where(ciou <= this_threshold)[0]
-        order = order[inds + 1]
-    return keep
 
 def non_max_suppression(
         prediction,
@@ -395,13 +171,17 @@ def non_max_suppression(
         (List[torch.Tensor]): A list of length batch_size, where each element is a tensor of
             shape (num_boxes, 6 + num_masks) containing the kept boxes, with columns
             (x1, y1, x2, y2, confidence, class, mask1, mask2, ...).
-    """ 
+    """
+
     # Checks
-    # conf_thres = 0.25
+    # conf_thres = 0.01 # Change!!
     assert 0 <= conf_thres <= 1, f'Invalid Confidence threshold {conf_thres}, valid values are between 0.0 and 1.0'
     assert 0 <= iou_thres <= 1, f'Invalid IoU {iou_thres}, valid values are between 0.0 and 1.0'
     if isinstance(prediction, (list, tuple)):  # YOLOv8 model in validation model, output = (inference_out, loss_out)
-        prediction = prediction[0]  # select only inference output
+        if isinstance(prediction[0], tuple):
+            prediction = prediction[0][0]   # JH I just needed to do this fix
+        else:
+            prediction = prediction[0]  # select only inference output
 
     device = prediction.device
     mps = 'mps' in device.type  # Apple MPS
@@ -411,25 +191,7 @@ def non_max_suppression(
     nc = nc or (prediction.shape[1] - 4)  # number of classes
     nm = prediction.shape[1] - nc - 4
     mi = 4 + nc  # mask start index
-
-    # ####################################################################################################################
-    if(nc > 15):
-        conf_thresh_per_class = [0.25] * nc   # per-class conf thresholds
-    else:
-        # conf_thresh_per_class =  [0.25, 0.2, 0.1, 0.2, 0.1, 0.1, 0.2, 0.25, 0.25, 0.1, 0.2, 0.1, 0.1, 0.25, 0.25]
-        conf_thresh_per_class = [0.25] * nc   # per-class conf thresholds
-    conf_thresh_per_class = torch.tensor(conf_thresh_per_class, device=device)
-    # predictions = prediction[:, 4:mi]
-    # # confidence and class
-    confidence, classes1 = prediction[:, 4:mi].max(1, keepdim=False)
-    # filter predictions tensor based on class confidence and corresponsing conf_thresh_per_class
-    # xc = confidence > conf_thresh_per_class[classes1] # candidates
-    xc = prediction[:, 4:mi].amax(1) > conf_thresh_per_class[classes1] # candidates
-    # data type of conf_thresh_per_class elements
-    # print(conf_thresh_per_class[classes1][0, 0].item())
-    # print(conf_thres)
-    # xc = prediction[:, 4:mi].amax(1) > conf_thres  # candidates
-    # ####################################################################################################################  
+    xc = prediction[:, 4:mi].amax(1) > conf_thres  # candidates
 
     # Settings
     # min_wh = 2  # (pixels) minimum box width and height
@@ -461,15 +223,11 @@ def non_max_suppression(
         box, cls, mask = x.split((4, nc, nm), 1)
         box = xywh2xyxy(box)  # center_x, center_y, width, height) to (x1, y1, x2, y2)
         if multi_label:
-            conf, new_classes = cls.max(1, keepdim=True)
-            i, j = (cls > conf_thresh_per_class[new_classes]).nonzero(as_tuple=False).T
-            # i, j = (cls > conf_thres).nonzero(as_tuple=False).T
+            i, j = (cls > conf_thres).nonzero(as_tuple=False).T
             x = torch.cat((box[i], x[i, 4 + j, None], j[:, None].float(), mask[i]), 1)
         else:  # best class only
             conf, j = cls.max(1, keepdim=True)
-            index = conf.view(-1) > conf_thresh_per_class[j.view(-1)]
-            # x = torch.cat((box, conf, j.float(), mask), 1)[conf.view(-1) > conf_thres]
-            x = torch.cat((box, conf, j.float(), mask), 1)[index]
+            x = torch.cat((box, conf, j.float(), mask), 1)[conf.view(-1) > conf_thres]
 
         # Filter by class
         if classes is not None:
@@ -478,6 +236,7 @@ def non_max_suppression(
         # Apply finite constraint
         # if not torch.isfinite(x).all():
         #     x = x[torch.isfinite(x).all(1)]
+
         # Check shape
         n = x.shape[0]  # number of boxes
         if not n:  # no boxes
@@ -487,10 +246,7 @@ def non_max_suppression(
         # Batched NMS
         c = x[:, 5:6] * (0 if agnostic else max_wh)  # classes
         boxes, scores = x[:, :4] + c, x[:, 4]  # boxes (offset by class), scores
-        # i = torchvision.ops.nms(boxes, scores, iou_thres)  # NMS
-        iou_thres = [0.45] *nc
-        # iou_thres = [0.45, 0.45, 0.6, 0.45, 0.6, 0.45, 0.45, 0.45, 0.45, 0.45, 0.45, 0.6, 0.45, 0.45, 0.45]
-        i = nms_giou(boxes.cpu().detach().numpy(), scores.cpu().detach().numpy(), iou_thres, x[:, 5:6])  # NMS
+        i = torchvision.ops.nms(boxes, scores, iou_thres)  # NMS
         i = i[:max_det]  # limit detections
         if merge and (1 < n < 3E3):  # Merge NMS (boxes merged using weighted mean)
             # update boxes as boxes(i,4) = weights(i,n) * boxes(n,4)

@@ -1,10 +1,7 @@
 # Jameel Hassan
 data
 cluster_out
-slurm_train
-slurm_val
 experiments
-inference_copy.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
