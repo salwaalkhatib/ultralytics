@@ -58,9 +58,11 @@ To request an Enterprise License please complete the form at [Ultralytics Licens
 ## Requirements
 YOLOv8 requires ultralytics package which requires Python>=3.7 and Pytorch>=1.7. Setup Environment with \
 ``` conda install pytorch==1.10.1 torchvision==0.11.2 torchaudio==0.10.1 cudatoolkit=11.3 -c pytorch -c conda-forge``` \ 
+
 ``` pip install ultralytics ```
 
 Run validation of model by specifying the checkpoint for ```PATH/TO/CHECKPOINT``` in \ 
+
 ``` python validate.py --checkpoint PATH/TO/CHECKPOINT ```
 
 ## Model Architecture</div>
